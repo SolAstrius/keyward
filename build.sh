@@ -25,6 +25,8 @@ codesign --force --sign - "$dist/.keywardd.new" >/dev/null 2>&1 || \
   echo "    (codesign failed for keywardd)"
 mv -f "$dist/.keywardd.new" "$dist/keywardd"
 
+cp "$root/assets/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,6 +36,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>Keyward</string>
   <key>CFBundleIdentifier</key><string>dev.danielsol.keyward</string>
   <key>CFBundleExecutable</key><string>Keyward</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
