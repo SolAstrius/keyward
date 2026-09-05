@@ -39,6 +39,9 @@ pub struct Ctx {
     /// Identity listings carry no signature and happen several times per ssh
     /// connection, so they are noise by default. Signatures are the record.
     pub log_lists: bool,
+    /// Seconds during which one Touch ID authentication covers further
+    /// signatures. 0 asks every time.
+    pub touch_id_reuse_secs: f64,
 }
 
 pub fn fingerprint(blob: &[u8]) -> String {
@@ -53,56 +56,77 @@ fn failure() -> Vec<u8> {
     vec![FAILURE]
 }
 
-/// The sentence shown in the Touch ID prompt.
+/// The line shown in the Touch ID prompt.
 ///
-/// Phrased imperatively and naming the act, because this is the moment the
-/// user is being asked to consent to it — "a request from launchd" tells them
-/// nothing they can act on.
+/// macOS draws this in a ~260pt-wide panel, so it has to survive being read at
+/// a glance: no shell fragments, no quotes, no backticks, and short enough not
+/// to wrap into a paragraph. The full command, commit message and process
+/// chain are in the app — the prompt only has to answer "consent to what?".
+const PROMPT_MAX: usize = 56;
+
 fn prompt_text(who: &Attribution) -> String {
     let p = &who.purpose;
-    let host = p.host.clone().unwrap_or_else(|| "an unknown host".into());
-    let head = match p.kind {
-        PurposeKind::CommitSigning => match (
-            who.context.git.as_ref().and_then(|g| g.subject.clone()),
-            p.repo.clone(),
-        ) {
-            (Some(subject), Some(repo)) => format!("Sign the commit “{subject}” in {repo}"),
-            (Some(subject), None) => format!("Sign the commit “{subject}”"),
-            (None, Some(repo)) => format!("Sign a git commit in {repo}"),
-            (None, None) => "Sign a git commit".to_string(),
+    let host = p.host.clone().unwrap_or_else(|| "unknown host".into());
+
+    let action = match p.kind {
+        PurposeKind::CommitSigning => match &p.repo {
+            // The commit subject is the interesting part but also the long
+            // part; it stays in the app rather than the dialog.
+            Some(repo) => format!("Sign a commit in {repo}"),
+            None => "Sign a git commit".to_string(),
         },
         PurposeKind::GitPush => match &p.remote_repo {
-            Some(r) => format!("Sign a git push to {host} — {r}"),
-            None => format!("Sign a git push to {host}"),
+            Some(r) => format!("git push to {}", short_repo(r)),
+            None => format!("git push to {host}"),
         },
         PurposeKind::GitFetch => match &p.remote_repo {
-            Some(r) => format!("Sign a git fetch from {host} — {r}"),
-            None => format!("Sign a git fetch from {host}"),
+            Some(r) => format!("git fetch from {}", short_repo(r)),
+            None => format!("git fetch from {host}"),
         },
-        PurposeKind::GitOverSsh => format!("Sign a git operation on {host}"),
-        PurposeKind::SshLogin => format!("Sign in to {host}"),
-        PurposeKind::RemoteCommand => match &p.remote_command {
-            // A prompt has to be readable at a glance; a long remote command
-            // would push the host off the end of the dialog.
-            Some(c) => format!("Run `{}` on {host}", crate::purpose::shorten(c, 48)),
-            None => format!("Run a command on {host}"),
-        },
-        PurposeKind::FileTransfer => format!("Transfer files with {host}"),
+        PurposeKind::GitOverSsh => format!("git on {host}"),
+        PurposeKind::SshLogin => format!("SSH to {host}"),
+        // Deliberately omits the command itself: it is arbitrary shell text and
+        // was the single worst thing to read in a narrow dialog.
+        PurposeKind::RemoteCommand => format!("Run a command on {host}"),
+        PurposeKind::FileTransfer => format!("Copy files with {host}"),
         PurposeKind::Signing => match &p.namespace {
-            Some(ns) => format!("Sign data in namespace {ns}"),
+            Some(ns) => format!("Sign data ({ns})"),
             None => "Sign data".to_string(),
         },
-        PurposeKind::Unknown => "Authorise an SSH signature".to_string(),
+        PurposeKind::Unknown => "Authorise a signature".to_string(),
     };
 
-    match who.app.as_ref().map(|a| a.name.clone()) {
-        Some(app) => format!("{head} — requested by {app}"),
-        None => head,
+    let action = sanitise(&action);
+    match who.app.as_ref().map(|a| sanitise(&a.name)) {
+        Some(app) if action.chars().count() + app.chars().count() + 3 <= PROMPT_MAX => {
+            format!("{action} · {app}")
+        }
+        _ => crate::purpose::shorten(&action, PROMPT_MAX),
     }
 }
 
-/// Query every upstream, merge the identity lists, and remember which upstream
-/// owns each key so a later signature goes to the right place.
+/// owner/repo.git -> owner/repo, and just repo when that is still long.
+fn short_repo(r: &str) -> String {
+    let r = r.trim_end_matches(".git");
+    if r.chars().count() <= 28 {
+        return r.to_string();
+    }
+    r.rsplit('/').next().unwrap_or(r).to_string()
+}
+
+/// Strip anything that turns the dialog into noise.
+fn sanitise(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '`' | '"' | '\'' | '\n' | '\r' | '\t' => ' ',
+            c => c,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn refresh_identities(ctx: &Ctx) -> Vec<(Vec<u8>, String)> {
     let mut merged: Vec<(Vec<u8>, String)> = Vec::new();
     let mut routes = HashMap::new();
@@ -191,7 +215,7 @@ fn handle_sign(ctx: &Ctx, payload: &[u8], who: &Attribution, bound: &Option<Stri
             let data = r2.string().unwrap_or(&[]).to_vec();
 
             let reason = prompt_text(who);
-            let (reply, outcome) = match e.sign(&data, &reason) {
+            let (reply, outcome) = match e.sign(&data, &reason, ctx.touch_id_reuse_secs) {
                 Ok(sig) => {
                     let mut w = Writer::new();
                     w.u8(SIGN_RESPONSE);

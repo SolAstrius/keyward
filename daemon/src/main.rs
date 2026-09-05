@@ -37,6 +37,9 @@ struct Config {
     /// Where the SEP-wrapped handle for our own key lives.
     #[serde(default)]
     log_list_identities: bool,
+    /// 0 = authenticate every signature. macOS caps this at 300.
+    #[serde(default)]
+    touch_id_reuse_secs: f64,
     #[serde(default)]
     enclave_key: Option<String>,
     #[serde(default = "default_enclave_comment")]
@@ -88,6 +91,7 @@ impl Default for Config {
             timeout_secs: default_timeout(),
             max_log_bytes: default_max_log(),
             log_list_identities: false,
+            touch_id_reuse_secs: 0.0,
             enclave_key: None,
             enclave_comment: default_enclave_comment(),
         }
@@ -295,6 +299,7 @@ fn main() {
         timeout,
         conns: AtomicUsize::new(0),
         log_lists: cfg.log_list_identities,
+        touch_id_reuse_secs: cfg.touch_id_reuse_secs,
     });
 
     eprintln!(

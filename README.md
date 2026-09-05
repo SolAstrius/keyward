@@ -200,3 +200,33 @@ success. Check the public key, not the error code.
 So `kwse.swift` is about eighty lines compiled to a static archive by `build.rs`
 and linked into the daemon. There is no second process and no shipped dylib —
 the Swift runtime lives in `/usr/lib/swift` on every macOS.
+
+## The authentication prompt
+
+macOS draws it in a ~260pt-wide panel, and it is a protected surface that
+`screencapture` refuses, so it has to be legible without being seen first.
+The reason string is therefore short (56 chars max), stripped of quotes,
+backticks and newlines, and never carries the remote command — arbitrary shell
+text was the single worst thing to read there. The command, the commit message
+and the process chain all live in the app instead.
+
+```
+SSH to root@10.0.0.2 · Ghostty
+Sign a commit in nixos-config · Claude
+git push to SolAstrius/keyward · Ghostty
+```
+
+`touch_id_reuse_secs` (config, 0 = every signature, macOS caps it at 300) holds
+one authenticated `LAContext` for that long, so a loop over the fleet asks once
+instead of once per host. Setting only
+`touchIDAuthenticationAllowableReuseDuration` on a fresh context per signature
+does nothing — the window only applies within a single context.
+
+## Never overwrite the daemon in place
+
+`build.sh` writes `.keywardd.new`, signs it, and renames over the target.
+Copying onto a running binary keeps the inode, so the kernel finds pages that
+no longer match the cached signature and kills the process with
+`CODESIGNING / "Invalid Page"` — and every later exec of that path with it. The
+symptom is `Permission denied (publickey)` everywhere, because the agent is
+simply gone.

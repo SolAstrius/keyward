@@ -15,7 +15,15 @@ echo "==> assembling $app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/app/.build/release/KeywardApp" "$app/Contents/MacOS/Keyward"
-cp "$root/daemon/target/release/keywardd" "$dist/keywardd"
+
+# Replace the daemon by rename, never in place. Overwriting a running binary's
+# file keeps the inode, so the kernel finds pages that no longer match the
+# cached signature and kills it with CODESIGNING/"Invalid Page" — taking every
+# later exec of that path with it. Write beside it, sign, then swap.
+cp "$root/daemon/target/release/keywardd" "$dist/.keywardd.new"
+codesign --force --sign - "$dist/.keywardd.new" >/dev/null 2>&1 || \
+  echo "    (codesign failed for keywardd)"
+mv -f "$dist/.keywardd.new" "$dist/keywardd"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

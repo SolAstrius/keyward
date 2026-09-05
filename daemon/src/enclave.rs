@@ -21,6 +21,7 @@ extern "C" {
         msg: *const u8,
         msg_len: usize,
         reason: *const i8,
+        reuse_seconds: f64,
         buf: *mut u8,
         cap: usize,
     ) -> isize;
@@ -123,7 +124,7 @@ impl Enclave {
     ///
     /// CryptoKit hashes with SHA-256 internally, which is what
     /// `ecdsa-sha2-nistp256` requires, and returns a raw r||s pair.
-    pub fn sign(&self, data: &[u8], reason: &str) -> Result<Vec<u8>, String> {
+    pub fn sign(&self, data: &[u8], reason: &str, reuse_secs: f64) -> Result<Vec<u8>, String> {
         let c_reason = CString::new(reason).unwrap_or_else(|_| CString::new("").unwrap());
         let mut sig = vec![0u8; 256];
         let n = unsafe {
@@ -133,6 +134,7 @@ impl Enclave {
                 data.as_ptr(),
                 data.len(),
                 c_reason.as_ptr(),
+                reuse_secs,
                 sig.as_mut_ptr(),
                 sig.len(),
             )
