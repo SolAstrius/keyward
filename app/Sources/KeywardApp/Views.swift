@@ -159,6 +159,8 @@ struct EventDetail: View {
                         }
                     }
 
+                    if event.kind == .sign { contextSection }
+
                     Section2("Request") {
                         Row("Action", event.kind.label)
                         Row("Outcome", event.outcome)
@@ -212,6 +214,33 @@ struct EventDetail: View {
         }
         .navigationTitle(event.appName)
         .navigationSubtitle(event.summary)
+    }
+
+    /// Everything that explains *why*, from the three channels the daemon has:
+    /// the repository on disk, a declaration filed by an agent, and the
+    /// environment of the nearest process that exposes one.
+    @ViewBuilder private var contextSection: some View {
+        let c = event.who.context
+        let hasAny = c.git != nil || c.sessionID != nil || !c.declarations.isEmpty
+        if hasAny {
+            Section2("Context") {
+                if let g = c.git {
+                    if let s = g.subject { Row("Message", s) }
+                    if let b = g.branch { Row("Branch", b, mono: true) }
+                    if let r = g.remote { Row("Remote", r, mono: true) }
+                }
+                ForEach(c.declarations, id: \.label) { d in
+                    Row(d.label, d.value)
+                }
+                if let s = c.sessionID {
+                    Row("Session", s, mono: true)
+                }
+                if let e = c.entrypoint { Row("Agent", e) }
+                if let from = c.envFrom {
+                    Row("Context via", "\(from)\(c.envFromPid.map { " (pid \($0))" } ?? "")")
+                }
+            }
+        }
     }
 
     private var header: some View {

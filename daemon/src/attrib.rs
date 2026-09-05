@@ -7,7 +7,8 @@
 //! the answer a human wants. Bundle detection is a path check rather than an
 //! AppKit lookup, so it still works after the process has exited.
 
-use crate::purpose::{self, Purpose};
+use crate::context::{self, Context};
+use crate::purpose::{self, Kind as PurposeKind, Purpose};
 use serde::{Deserialize, Serialize};
 use std::ffi::CStr;
 use std::os::unix::io::RawFd;
@@ -127,6 +128,9 @@ pub struct Attribution {
     pub destination: Option<String>,
     /// What this request is for, in human terms.
     pub purpose: Purpose,
+    /// Anything the caller's environment, a declaration file, or the repository
+    /// itself can tell us about why.
+    pub context: Context,
 }
 
 /// Peer pid of a connected unix socket, via LOCAL_PEERPID.
@@ -206,6 +210,16 @@ pub fn proc_name(pid: i32) -> Option<String> {
 
 /// Full argv of a process, via KERN_PROCARGS2.
 pub fn proc_args(pid: i32) -> Vec<String> {
+    proc_argv_env(pid).0
+}
+
+/// argv and environment of a process.
+///
+/// The kernel only hands back the environment when the target is not a platform
+/// binary, so `/usr/bin/ssh` and `/bin/zsh` yield argv alone. A user-installed
+/// binary further up the chain — an agent, a terminal — still exposes its own,
+/// which is where the useful session context lives.
+pub fn proc_argv_env(pid: i32) -> (Vec<String>, Vec<(String, String)>) {
     let mut argmax: libc::c_int = 0;
     let mut sz = std::mem::size_of::<libc::c_int>();
     let mut mib_max: [libc::c_int; 2] = [libc::CTL_KERN, libc::KERN_ARGMAX];
@@ -220,7 +234,7 @@ pub fn proc_args(pid: i32) -> Vec<String> {
         )
     };
     if rc != 0 || argmax <= 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut buf = vec![0u8; argmax as usize];
@@ -237,7 +251,7 @@ pub fn proc_args(pid: i32) -> Vec<String> {
         )
     };
     if rc != 0 || bsz < 4 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     buf.truncate(bsz);
 
@@ -251,22 +265,40 @@ pub fn proc_args(pid: i32) -> Vec<String> {
         i += 1;
     }
 
-    let mut out = Vec::with_capacity(argc);
-    while i < buf.len() && out.len() < argc {
-        let start = i;
-        while i < buf.len() && buf[i] != 0 {
-            i += 1;
+    let mut take = |i: &mut usize| -> Option<String> {
+        while *i < buf.len() && buf[*i] == 0 {
+            *i += 1;
         }
-        if let Ok(s) = CStr::from_bytes_with_nul(&buf[start..=i.min(buf.len() - 1)])
-            .map(|c| c.to_string_lossy().into_owned())
-        {
-            out.push(s);
-        } else if let Ok(s) = std::str::from_utf8(&buf[start..i]) {
-            out.push(s.to_string());
+        if *i >= buf.len() {
+            return None;
         }
-        i += 1;
+        let start = *i;
+        while *i < buf.len() && buf[*i] != 0 {
+            *i += 1;
+        }
+        std::str::from_utf8(&buf[start..*i]).ok().map(str::to_string)
+    };
+
+    let mut args = Vec::with_capacity(argc);
+    while args.len() < argc {
+        match take(&mut i) {
+            Some(a) => args.push(a),
+            None => break,
+        }
     }
-    out
+
+    // Whatever follows argv is the environment, then some dyld-private strings
+    // that carry no "=" and fall out naturally.
+    let mut env = Vec::new();
+    while let Some(e) = take(&mut i) {
+        if let Some((k, v)) = e.split_once('=') {
+            if !k.is_empty() {
+                env.push((k.to_string(), v.to_string()));
+            }
+        }
+    }
+
+    (args, env)
 }
 
 fn proc_info(pid: i32) -> ProcInfo {
@@ -344,6 +376,7 @@ pub fn attribute(fd: RawFd) -> Attribution {
                 apps: Vec::new(),
                 destination: None,
                 purpose: purpose::classify(&[]),
+                context: Context::default(),
             }
         }
     };
@@ -374,6 +407,8 @@ pub fn attribute(fd: RawFd) -> Attribution {
     let app = apps.last().cloned();
 
     let purpose = purpose::classify(&chain);
+    let signing_commit = matches!(purpose.kind, PurposeKind::CommitSigning);
+    let ctx = context::gather(&chain, purpose.repo_path.as_deref(), signing_commit);
 
     Attribution {
         pid,
@@ -383,5 +418,6 @@ pub fn attribute(fd: RawFd) -> Attribution {
         apps,
         destination,
         purpose,
+        context: ctx,
     }
 }

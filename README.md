@@ -85,3 +85,52 @@ when both hold the same key.
 One JSON object per request in `events.jsonl`, holding the purpose, the full
 process ancestry, the key fingerprint, the upstream that signed, the destination
 and the outcome. The app tails it; nothing else writes to it.
+
+## Passing context in
+
+Three channels, none needing cooperation from `ssh` itself.
+
+**1. The repository.** For git work, the branch, remote and the commit message
+about to be signed are read from disk. git writes `COMMIT_EDITMSG` before it
+asks for the signature, so the message is already there. Nothing to configure.
+
+**2. A declaration file, keyed by pid.** Any process may explain itself:
+
+```sh
+echo '{"reason":"release cut","task":"ASTR-441"}' \
+  > "$HOME/Library/Application Support/Keyward/context/$$.json"
+```
+
+The daemon walks the process ancestry and picks up the file belonging to the
+nearest matching pid, so a wrapper can label a single command or a long-running
+agent can label its whole session. Nearest wins. This is the only channel that
+works for *every* request type.
+
+**3. The environment of the nearest ancestor that exposes one.** Measured
+behaviour on macOS 26, not documented policy:
+
+| process | environment readable |
+|---|---|
+| `/usr/bin/ssh` | no |
+| `/usr/bin/ssh-keygen` | **yes** |
+| `/bin/zsh`, `/bin/sleep` | no |
+| user-installed binaries (agents, terminals) | **yes** |
+
+Both `ssh` and `ssh-keygen` carry identical code-signing flags
+(`0x10000(runtime)`), so the code signature does not explain the difference —
+treat the table as empirical.
+
+The practical consequence:
+
+- **Commit signing** goes through `ssh-keygen`, so a per-invocation variable
+  works: `KEYWARD_REASON="release cut" git commit -S -m …`
+- **SSH authentication** goes through `ssh`, which exposes nothing, so a
+  per-invocation variable is invisible. Use channel 2 for those.
+- Either way the daemon falls back to the nearest readable ancestor, which is
+  usually the agent itself — that is where `CLAUDE_CODE_HOST_SESSION_ID`,
+  `CLAUDE_CODE_ENTRYPOINT` and W3C `BAGGAGE` come from, with no setup at all.
+
+`KEYWARD_*` is the free-form namespace. Everything else is a strict allow-list
+(`ENV_ALLOW` in `daemon/src/context.rs`) with a secret-shaped-name denylist on
+top, because the same environment also holds `CLAUDE_CODE_OAUTH_TOKEN`. Widen
+the allow-list deliberately, never by dumping the environment.
