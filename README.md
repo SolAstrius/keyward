@@ -134,3 +134,69 @@ The practical consequence:
 (`ENV_ALLOW` in `daemon/src/context.rs`) with a secret-shaped-name denylist on
 top, because the same environment also holds `CLAUDE_CODE_OAUTH_TOKEN`. Widen
 the allow-list deliberately, never by dumping the environment.
+
+## Holding the key itself
+
+Keyward can own a Secure Enclave key instead of proxying to Secretive:
+
+```sh
+keywardd --generate-key --policy presence   # or: biometry, none
+keywardd --pubkey                           # the authorized_keys line
+```
+
+The private scalar is generated inside the SEP and never leaves it. What lands
+on disk (`enclave-key.blob`, mode 600) is a 324-byte SEP-wrapped handle that is
+inert on any other machine.
+
+**Why bother, when Secretive already does this.** Because the agent that
+performs the signature is the one that writes the authentication prompt. A
+proxy in front of Secretive makes this strictly worse — Secretive sees
+`keywardd` as its peer and says *"a request from launchd"*. Keyward knows what
+the request is for, so the prompt reads:
+
+> Sign the commit “Read agent context from env, sidecar and repo” in keyward — requested by Ghostty
+
+`--policy` decides what each signature costs:
+
+| policy | prompt | survives a fingerprint change |
+|---|---|---|
+| `none` | none | yes |
+| `presence` | Touch ID, password fallback | yes |
+| `biometry` | Touch ID only | **no — the key is destroyed** |
+
+### The trade-off, stated plainly
+
+Secretive's key is bound to the SEP *and* to Secretive's team identity via the
+keychain, so another program cannot use it even with full file access. Keyward's
+handle is bound to the SEP only, because the keychain route needs an Apple
+signing certificate. Anything running as you that can read the blob can ask the
+enclave to sign — which is why `presence` or `biometry` matters: with those, a
+silent background signature is impossible.
+
+It remains far stronger than an on-disk private key. The key cannot be stolen;
+an attacker has to stay resident on this Mac.
+
+### There is no backup
+
+An enclave key cannot be exported, copied or escrowed. If this machine is lost,
+so is the key. Authorise a second, non-enclave key for recovery *before* you
+depend on this one, and keep the old key in `allowed_signers` forever or
+previously signed commits stop verifying.
+
+`--generate-key` refuses to overwrite an existing handle for the same reason.
+
+### Why there is Swift in a Rust daemon
+
+Apple exposes Secure Enclave key *persistence* only through CryptoKit, which is
+Swift-only. Everything reachable from C was tried: `SecKeyCreateRandomKey` with
+`kSecAttrIsPermanent: true` needs a keychain entitlement (`errSecMissingEntitlement`,
+and an ad-hoc signature carrying one gets the process killed), while a
+non-permanent key cannot be exported — `SecKeyCopyExternalRepresentation`
+returns "export not implemented for key". The `toid` attribute is the right size
+(324 bytes) but feeding it back to `SecKeyCreateWithData` **silently generates a
+different key**, which signs successfully and is therefore easy to mistake for
+success. Check the public key, not the error code.
+
+So `kwse.swift` is about eighty lines compiled to a static archive by `build.rs`
+and linked into the daemon. There is no second process and no shipped dylib —
+the Swift runtime lives in `/usr/lib/swift` on every macOS.

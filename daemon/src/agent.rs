@@ -1,6 +1,8 @@
 //! The proxy itself.
 
 use crate::attrib::{self, Attribution};
+use crate::enclave::Enclave;
+use crate::purpose::Kind as PurposeKind;
 use crate::event::{Event, Kind, Log};
 use crate::upstream::Upstream;
 use crate::wire::{self, Reader, Writer};
@@ -18,12 +20,15 @@ pub const FAILURE: u8 = 5;
 pub const REQUEST_IDENTITIES: u8 = 11;
 pub const IDENTITIES_ANSWER: u8 = 12;
 pub const SIGN_REQUEST: u8 = 13;
+pub const SIGN_RESPONSE: u8 = 14;
 pub const EXTENSION: u8 = 27;
 
 const MAX_MSG: u32 = 1 << 20;
 const MAX_CONNS: usize = 512;
 
 pub struct Ctx {
+    /// The key Keyward holds in the Secure Enclave itself, if one exists.
+    pub enclave: Option<Enclave>,
     pub upstreams: Vec<Upstream>,
     /// key blob -> index into `upstreams`
     pub routes: RwLock<HashMap<Vec<u8>, usize>>,
@@ -43,6 +48,52 @@ pub fn fingerprint(blob: &[u8]) -> String {
 
 fn failure() -> Vec<u8> {
     vec![FAILURE]
+}
+
+/// The sentence shown in the Touch ID prompt.
+///
+/// Phrased imperatively and naming the act, because this is the moment the
+/// user is being asked to consent to it — "a request from launchd" tells them
+/// nothing they can act on.
+fn prompt_text(who: &Attribution) -> String {
+    let p = &who.purpose;
+    let host = p.host.clone().unwrap_or_else(|| "an unknown host".into());
+    let head = match p.kind {
+        PurposeKind::CommitSigning => match (
+            who.context.git.as_ref().and_then(|g| g.subject.clone()),
+            p.repo.clone(),
+        ) {
+            (Some(subject), Some(repo)) => format!("Sign the commit “{subject}” in {repo}"),
+            (Some(subject), None) => format!("Sign the commit “{subject}”"),
+            (None, Some(repo)) => format!("Sign a git commit in {repo}"),
+            (None, None) => "Sign a git commit".to_string(),
+        },
+        PurposeKind::GitPush => match &p.remote_repo {
+            Some(r) => format!("Sign a git push to {host} — {r}"),
+            None => format!("Sign a git push to {host}"),
+        },
+        PurposeKind::GitFetch => match &p.remote_repo {
+            Some(r) => format!("Sign a git fetch from {host} — {r}"),
+            None => format!("Sign a git fetch from {host}"),
+        },
+        PurposeKind::GitOverSsh => format!("Sign a git operation on {host}"),
+        PurposeKind::SshLogin => format!("Sign in to {host}"),
+        PurposeKind::RemoteCommand => match &p.remote_command {
+            Some(c) => format!("Run `{c}` on {host}"),
+            None => format!("Run a command on {host}"),
+        },
+        PurposeKind::FileTransfer => format!("Transfer files with {host}"),
+        PurposeKind::Signing => match &p.namespace {
+            Some(ns) => format!("Sign data in namespace {ns}"),
+            None => "Sign data".to_string(),
+        },
+        PurposeKind::Unknown => "Authorise an SSH signature".to_string(),
+    };
+
+    match who.app.as_ref().map(|a| a.name.clone()) {
+        Some(app) => format!("{head} — requested by {app}"),
+        None => head,
+    }
 }
 
 /// Query every upstream, merge the identity lists, and remember which upstream
@@ -81,7 +132,13 @@ fn refresh_identities(ctx: &Ctx) -> Vec<(Vec<u8>, String)> {
 
 fn handle_request_identities(ctx: &Ctx, who: &Attribution) -> Vec<u8> {
     let started = Instant::now();
-    let ids = refresh_identities(ctx);
+    let mut ids = refresh_identities(ctx);
+
+    // Our own enclave key is offered first, so ssh tries it before falling
+    // back to whatever the upstream agents hold.
+    if let Some(e) = &ctx.enclave {
+        ids.insert(0, (e.ssh_public_blob(), e.comment.clone()));
+    }
 
     let mut w = Writer::new();
     w.u8(IDENTITIES_ANSWER);
@@ -115,6 +172,41 @@ fn handle_sign(ctx: &Ctx, payload: &[u8], who: &Attribution, bound: &Option<Stri
         Some(b) => b.to_vec(),
         None => return failure(),
     };
+
+    // Is this our own key? Then we sign it here, and we get to write the
+    // prompt the user actually sees.
+    if let Some(e) = &ctx.enclave {
+        if e.ssh_public_blob() == blob {
+            let mut r2 = Reader::new(payload);
+            let _ = r2.u8();
+            let _ = r2.string();
+            let data = r2.string().unwrap_or(&[]).to_vec();
+
+            let reason = prompt_text(who);
+            let (reply, outcome) = match e.sign(&data, &reason) {
+                Ok(sig) => {
+                    let mut w = Writer::new();
+                    w.u8(SIGN_RESPONSE);
+                    w.string(&sig);
+                    (w.buf, "ok".to_string())
+                }
+                Err(err) => (failure(), err),
+            };
+
+            ctx.log.append(&Event {
+                ts: crate::event::now(),
+                kind: Kind::Sign,
+                who: who.clone(),
+                key_fp: Some(fingerprint(&blob)),
+                key_comment: Some(e.comment.clone()),
+                upstream: Some("Secure Enclave".to_string()),
+                bound_host_fp: bound.clone(),
+                outcome,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+            return reply;
+        }
+    }
 
     let mut idx = ctx.routes.read().ok().and_then(|m| m.get(&blob).copied());
     if idx.is_none() {

@@ -1,6 +1,7 @@
 mod agent;
 mod attrib;
 mod context;
+mod enclave;
 mod event;
 mod purpose;
 mod upstream;
@@ -33,6 +34,24 @@ struct Config {
     timeout_secs: u64,
     #[serde(default = "default_max_log")]
     max_log_bytes: u64,
+    /// Where the SEP-wrapped handle for our own key lives.
+    #[serde(default)]
+    enclave_key: Option<String>,
+    #[serde(default = "default_enclave_comment")]
+    enclave_comment: String,
+}
+
+fn default_enclave_comment() -> String {
+    let host = std::process::Command::new("scutil")
+        .arg("--get")
+        .arg("LocalHostName")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "mac".into());
+    format!("{host}@keyward")
 }
 
 fn default_timeout() -> u64 {
@@ -66,6 +85,8 @@ impl Default for Config {
             ],
             timeout_secs: default_timeout(),
             max_log_bytes: default_max_log(),
+            enclave_key: None,
+            enclave_comment: default_enclave_comment(),
         }
     }
 }
@@ -166,6 +187,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut cfg_path: Option<String> = None;
     let mut want_health = false;
+    let mut want_generate = false;
+    let mut want_pubkey = false;
+    let mut force = false;
+    let mut policy = enclave::Policy::UserPresence;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -174,8 +199,24 @@ fn main() {
                 i += 1;
             }
             "--health" => want_health = true,
+            "--generate-key" => want_generate = true,
+            "--pubkey" => want_pubkey = true,
+            "--force" => force = true,
+            "--policy" => {
+                let v = args.get(i + 1).cloned().unwrap_or_default();
+                match enclave::Policy::parse(&v) {
+                    Some(p) => policy = p,
+                    None => {
+                        eprintln!("keywardd: --policy must be none, presence or biometry");
+                        std::process::exit(2);
+                    }
+                }
+                i += 1;
+            }
             "--help" | "-h" => {
-                println!("keywardd [--config PATH] [--health]");
+                println!(
+                    "keywardd [--config PATH]\n                       --health                    probe the socket, non-zero if unanswered\n                       --generate-key              create a Secure Enclave key (once)\n                       --policy none|presence|biometry   auth required per signature\n                       --pubkey                    print the authorized_keys line\n                       --force                     allow overwriting an existing key"
+                );
                 return;
             }
             other => eprintln!("keywardd: ignoring unknown argument {other}"),
@@ -185,6 +226,43 @@ fn main() {
 
     let cfg = load_config(cfg_path.as_deref());
     let timeout = Duration::from_secs(cfg.timeout_secs);
+
+    let key_path = cfg
+        .enclave_key
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(enclave::default_key_path);
+
+    if want_generate {
+        match enclave::generate(&key_path, policy, force) {
+            Ok(()) => {
+                println!("created a Secure Enclave key ({} policy)", policy.label());
+                println!("  handle: {}", key_path.display());
+                println!("\nIt cannot be exported or backed up. Authorise it before you rely on it:");
+                if let Some(e) = enclave::Enclave::load(&key_path, cfg.enclave_comment.clone()) {
+                    println!("\n{}\n", e.authorized_key_line());
+                }
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("keywardd: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let enclave = enclave::Enclave::load(&key_path, cfg.enclave_comment.clone());
+
+    if want_pubkey {
+        match &enclave {
+            Some(e) => println!("{}", e.authorized_key_line()),
+            None => {
+                eprintln!("keywardd: no enclave key yet — run keywardd --generate-key");
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
+    }
 
     if want_health {
         std::process::exit(health(&cfg.listen, timeout));
@@ -199,6 +277,7 @@ fn main() {
     };
 
     let ctx = Arc::new(Ctx {
+        enclave,
         upstreams: cfg
             .upstreams
             .iter()
@@ -215,9 +294,14 @@ fn main() {
     });
 
     eprintln!(
-        "keywardd: listening on {} with {} upstream(s)",
+        "keywardd: listening on {} with {} upstream(s){}",
         cfg.listen,
-        ctx.upstreams.len()
+        ctx.upstreams.len(),
+        if ctx.enclave.is_some() {
+            " + its own Secure Enclave key"
+        } else {
+            ""
+        }
     );
 
     for stream in listener.incoming() {
