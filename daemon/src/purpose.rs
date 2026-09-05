@@ -269,6 +269,10 @@ pub fn classify(chain: &[ProcInfo]) -> Purpose {
     }
 }
 
+pub fn shorten(s: &str, n: usize) -> String {
+    truncate(s, n)
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()

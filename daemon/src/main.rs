@@ -36,6 +36,8 @@ struct Config {
     max_log_bytes: u64,
     /// Where the SEP-wrapped handle for our own key lives.
     #[serde(default)]
+    log_list_identities: bool,
+    #[serde(default)]
     enclave_key: Option<String>,
     #[serde(default = "default_enclave_comment")]
     enclave_comment: String,
@@ -85,6 +87,7 @@ impl Default for Config {
             ],
             timeout_secs: default_timeout(),
             max_log_bytes: default_max_log(),
+            log_list_identities: false,
             enclave_key: None,
             enclave_comment: default_enclave_comment(),
         }
@@ -291,6 +294,7 @@ fn main() {
         log: Log::new(PathBuf::from(&cfg.log), cfg.max_log_bytes),
         timeout,
         conns: AtomicUsize::new(0),
+        log_lists: cfg.log_list_identities,
     });
 
     eprintln!(

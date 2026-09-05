@@ -36,6 +36,9 @@ pub struct Ctx {
     pub log: Log,
     pub timeout: Duration,
     pub conns: AtomicUsize,
+    /// Identity listings carry no signature and happen several times per ssh
+    /// connection, so they are noise by default. Signatures are the record.
+    pub log_lists: bool,
 }
 
 pub fn fingerprint(blob: &[u8]) -> String {
@@ -79,7 +82,9 @@ fn prompt_text(who: &Attribution) -> String {
         PurposeKind::GitOverSsh => format!("Sign a git operation on {host}"),
         PurposeKind::SshLogin => format!("Sign in to {host}"),
         PurposeKind::RemoteCommand => match &p.remote_command {
-            Some(c) => format!("Run `{c}` on {host}"),
+            // A prompt has to be readable at a glance; a long remote command
+            // would push the host off the end of the dialog.
+            Some(c) => format!("Run `{}` on {host}", crate::purpose::shorten(c, 48)),
             None => format!("Run a command on {host}"),
         },
         PurposeKind::FileTransfer => format!("Transfer files with {host}"),
@@ -148,7 +153,9 @@ fn handle_request_identities(ctx: &Ctx, who: &Attribution) -> Vec<u8> {
         w.string(comment.as_bytes());
     }
 
-    ctx.log.append(&Event {
+    let is_self_probe = who.process.as_ref().and_then(|p| p.name.as_deref()) == Some("keywardd");
+    if ctx.log_lists && !is_self_probe {
+        ctx.log.append(&Event {
         ts: crate::event::now(),
         kind: Kind::ListIdentities,
         who: who.clone(),
@@ -158,7 +165,8 @@ fn handle_request_identities(ctx: &Ctx, who: &Attribution) -> Vec<u8> {
         bound_host_fp: None,
         outcome: format!("{} keys", ids.len()),
         duration_ms: started.elapsed().as_millis() as u64,
-    });
+        });
+    }
 
     w.buf
 }
@@ -282,7 +290,8 @@ fn handle_extension(
             let fp = fingerprint(hostkey);
             if bound.as_deref() != Some(fp.as_str()) {
                 *bound = Some(fp.clone());
-                ctx.log.append(&Event {
+                if ctx.log_lists {
+                    ctx.log.append(&Event {
                     ts: crate::event::now(),
                     kind: Kind::SessionBind,
                     who: who.clone(),
@@ -292,7 +301,8 @@ fn handle_extension(
                     bound_host_fp: Some(fp),
                     outcome: "recorded".to_string(),
                     duration_ms: 0,
-                });
+                    });
+                }
             }
         }
     }
