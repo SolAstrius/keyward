@@ -246,10 +246,38 @@ simply gone.
 
 ## Install
 
+Building from source is the recommended path, and needs nothing but the Xcode
+command line tools plus Rust:
+
 ```sh
 ./build.sh      # daemon + app, daemon embedded in the bundle
 ./install.sh    # copy to ~/Applications and let it register its agents
 ```
+
+A DMG is attached to each release. It is **ad-hoc signed and not notarised**,
+because Gatekeeper only trusts a Developer ID certificate plus notarisation and
+both require the paid Apple Developer Program. macOS will refuse to open it
+until the quarantine attribute is cleared:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Keyward.app
+```
+
+If that trade is not one you want to make, build it yourself — the toolchain is
+the same either way.
+
+Requires macOS 14+ on Apple Silicon; the Secure Enclave key has nowhere to live
+otherwise.
+
+### First run
+
+```sh
+keywardd --generate-key --policy presence   # once; cannot be undone or backed up
+keywardd --pubkey                           # authorise this on your servers
+```
+
+Then point ssh at it — `IdentityAgent ~/.ssh/keyward.sock` — and keep an
+existing key authorised until you have confirmed the new one works.
 
 The daemon ships **inside** `Keyward.app/Contents/MacOS/keywardd`, so the app is
 the whole product: one thing to move, one path for launchd, and no dependency
