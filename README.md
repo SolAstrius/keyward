@@ -11,6 +11,19 @@ answers the question neither of them can: not just "a key was used", but
   attributes and logs every request.
 - `app/` — SwiftUI. Live view and history, with app icons and full detail.
 
+![Signing a commit](assets/screenshots/approval-commit.png)
+
+The system Touch ID sheet cannot be restyled or moved, so Keyward lays a card
+out *around* it — the sheet docks into a slot sized to fit, and everything worth
+reading sits beside it.
+
+![Running a remote command](assets/screenshots/approval-command.png)
+
+A multi-line command is shown in full rather than as `bash -s`, with section
+`echo`s rendered as comments.
+
+*(Screenshots use example data.)*
+
 ## Why
 
 macOS gives an agent one way to identify its caller: resolve the peer pid with
