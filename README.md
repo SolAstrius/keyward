@@ -230,3 +230,35 @@ no longer match the cached signature and kills the process with
 `CODESIGNING / "Invalid Page"` — and every later exec of that path with it. The
 symptom is `Permission denied (publickey)` everywhere, because the agent is
 simply gone.
+
+## Install
+
+```sh
+./build.sh      # daemon + app, daemon embedded in the bundle
+./install.sh    # copy to ~/Applications and let it register its agents
+```
+
+The daemon ships **inside** `Keyward.app/Contents/MacOS/keywardd`, so the app is
+the whole product: one thing to move, one path for launchd, and no dependency
+on a checkout that could be cleaned or relocated out from under SSH.
+
+On launch the app writes `dev.danielsol.keyward.agent` and
+`.watchdog` into `~/Library/LaunchAgents`, pointing at the bundle it is
+running from, and reloads them only when the contents actually change. Move the
+app and the next launch repairs the paths by itself.
+
+`keywardd` is also reachable directly for `--health`, `--pubkey` and
+`--generate-key`; `dist/keywardd` is a symlink to the copy inside the bundle.
+
+### What nix owns, and what it deliberately does not
+
+The nix-darwin flake configures Keyward — `IdentityAgent`, `SSH_AUTH_SOCK`,
+`~/.config/keyward/config.json` — and installs the built bundle into
+`~/Applications` from an activation script. It does **not** declare the launchd
+agent. A path baked into the flake pointed into a git checkout, so a clean or a
+move would have left SSH with no agent at all; the app owning its own
+registration keeps the running daemon and its path in the same place.
+
+Building it in the nix sandbox is not possible: it links a Swift shim that needs
+Xcode. The activation script copies whatever `./build.sh` produced and does
+nothing when there is no build to copy.

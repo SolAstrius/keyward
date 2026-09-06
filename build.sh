@@ -16,14 +16,19 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/app/.build/release/KeywardApp" "$app/Contents/MacOS/Keyward"
 
-# Replace the daemon by rename, never in place. Overwriting a running binary's
-# file keeps the inode, so the kernel finds pages that no longer match the
-# cached signature and kills it with CODESIGNING/"Invalid Page" — taking every
-# later exec of that path with it. Write beside it, sign, then swap.
-cp "$root/daemon/target/release/keywardd" "$dist/.keywardd.new"
-codesign --force --sign - "$dist/.keywardd.new" >/dev/null 2>&1 || \
-  echo "    (codesign failed for keywardd)"
-mv -f "$dist/.keywardd.new" "$dist/keywardd"
+# The daemon ships *inside* the bundle. That makes the app the whole product:
+# one thing to move, one path for launchd to exec, and no dependency on a
+# checkout that could be cleaned or relocated out from under SSH.
+#
+# Replace by rename, never in place. Overwriting a running binary's file keeps
+# the inode, so the kernel finds pages that no longer match the cached
+# signature and kills it with CODESIGNING/"Invalid Page" — taking every later
+# exec of that path with it.
+cp "$root/daemon/target/release/keywardd" "$app/Contents/MacOS/.keywardd.new"
+mv -f "$app/Contents/MacOS/.keywardd.new" "$app/Contents/MacOS/keywardd"
+
+# A convenience handle for the CLI (--health, --pubkey), same binary.
+ln -sfn "$app/Contents/MacOS/keywardd" "$dist/keywardd"
 
 cp "$root/assets/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 
@@ -47,10 +52,11 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc signature: enough for a stable bundle identity and notifications.
+# Sign the nested binary first, then the bundle that contains it.
+codesign --force --sign - --timestamp=none "$app/Contents/MacOS/keywardd" >/dev/null 2>&1
 codesign --force --sign - --timestamp=none "$app" >/dev/null 2>&1 || \
   echo "    (codesign failed; app still runs, notifications may not)"
 
 echo "==> done"
-echo "    app:    $app"
-echo "    daemon: $dist/keywardd"
+echo "    app:    $app  (daemon embedded)"
+echo "    run ./install.sh to place it in /Applications and register its agents"

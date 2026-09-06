@@ -6,6 +6,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         ApprovalServer.shared.start()
+        AgentInstaller.installIfNeeded()
     }
 }
 
