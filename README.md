@@ -211,9 +211,9 @@ text was the single worst thing to read there. The command, the commit message
 and the process chain all live in the app instead.
 
 ```
-SSH to root@10.0.0.2 · Ghostty
+SSH to root@server.example · Ghostty
 Sign a commit in nixos-config · Claude
-git push to SolAstrius/keyward · Ghostty
+git push to owner/repo · Ghostty
 ```
 
 `touch_id_reuse_secs` (config, 0 = every signature, macOS caps it at 300) holds
