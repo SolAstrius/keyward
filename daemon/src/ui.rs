@@ -35,6 +35,8 @@ struct Show<'a> {
     /// The actual command or operation — the card has room for it, the sheet
     /// does not, and "run a command" without saying which is useless.
     command: Option<String>,
+    /// True when `command` is a script recovered from stdin rather than argv.
+    script: bool,
     chain: Vec<String>,
     session: Option<String>,
 }
@@ -56,6 +58,31 @@ impl Card {
     }
 }
 
+/// `ssh host bash -s` names the shell, not the work — the work is on stdin.
+fn reads_stdin(cmd: &str) -> bool {
+    matches!(
+        cmd.trim(),
+        "bash -s" | "sh -s" | "zsh -s" | "bash" | "sh" | "zsh" | "bash -" | "sh -" | "cat"
+    )
+}
+
+/// The script a stdin-reading shell was handed, when it is recoverable.
+///
+/// zsh writes a heredoc to a temp file, so fd 0 is a plain vnode we can read.
+/// Anything genuinely piped is a pipe with no backing file and stays unknown —
+/// this returns None there rather than inventing something.
+fn stdin_script(pid: i32) -> Option<String> {
+    const MAX: u64 = 64 * 1024;
+    let path = crate::attrib::fd_path(pid, 0)?;
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let t = text.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
+}
+
 pub fn show(who: &Attribution, headline: &str, key: Option<&str>, fp: Option<&str>) -> Card {
     let mut stream = match UnixStream::connect(socket_path()) {
         Ok(s) => s,
@@ -65,6 +92,20 @@ pub fn show(who: &Attribution, headline: &str, key: Option<&str>, fp: Option<&st
     let _ = stream.set_write_timeout(Some(Duration::from_millis(600)));
 
     let git = who.context.git.as_ref();
+
+    let raw = who
+        .purpose
+        .remote_command
+        .clone()
+        .or_else(|| who.process.as_ref().map(|p| p.commandline()));
+    let (command, is_script) = match raw {
+        Some(c) if reads_stdin(&c) => match who.process.as_ref().and_then(|p| stdin_script(p.pid)) {
+            Some(script) => (Some(script), true),
+            // Honest about the gap: a pipe leaves nothing to read.
+            None => (Some(format!("{c}   (script piped on stdin — not readable)")), false),
+        },
+        other => (other, false),
+    };
     let msg = Show {
         kind: "show",
         headline,
@@ -77,11 +118,8 @@ pub fn show(who: &Attribution, headline: &str, key: Option<&str>, fp: Option<&st
         repo: who.purpose.repo.clone(),
         branch: git.and_then(|g| g.branch.clone()),
         subject: git.and_then(|g| g.subject.clone()),
-        command: who
-            .purpose
-            .remote_command
-            .clone()
-            .or_else(|| who.process.as_ref().map(|p| p.commandline())),
+        command: command.clone(),
+        script: is_script,
         chain: who
             .ancestry
             .iter()

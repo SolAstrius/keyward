@@ -18,6 +18,11 @@ const LOCAL_PEERPID: libc::c_int = 2;
 const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
 const KERN_PROCARGS2: libc::c_int = 49;
 const PROC_PIDVNODEPATHINFO: libc::c_int = 9;
+const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+/// sizeof(struct vnode_fdinfowithpath) and the offset of pvip.vip_path inside
+/// it, taken from the SDK headers.
+const FDVNODEPATHINFO_SIZE: usize = 1200;
+const FD_VIP_PATH_OFFSET: usize = 176;
 /// sizeof(struct proc_vnodepathinfo) and the offset of pvi_cdir.vip_path
 /// within it, both taken from the SDK headers rather than derived by hand —
 /// vinfo_stat packs to 136 bytes, not the 144 a naive reading suggests.
@@ -64,6 +69,45 @@ extern "C" {
         buffer: *mut libc::c_void,
         buffersize: libc::c_int,
     ) -> libc::c_int;
+    fn proc_pidfdinfo(
+        pid: libc::c_int,
+        fd: libc::c_int,
+        flavor: libc::c_int,
+        buffer: *mut libc::c_void,
+        buffersize: libc::c_int,
+    ) -> libc::c_int;
+}
+
+/// Path backing a file descriptor, when it is a plain file.
+///
+/// `ssh host bash -s <<EOF` looks like nothing on the command line, because the
+/// script arrives on stdin. zsh materialises a heredoc as a temp file, so fd 0
+/// is a readable vnode and the real script can be recovered. A pipe cannot be,
+/// and this returns None for it rather than guessing.
+pub fn fd_path(pid: i32, fd: i32) -> Option<String> {
+    let mut buf = vec![0u8; FDVNODEPATHINFO_SIZE];
+    let n = unsafe {
+        proc_pidfdinfo(
+            pid,
+            fd,
+            PROC_PIDFDVNODEPATHINFO,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            FDVNODEPATHINFO_SIZE as libc::c_int,
+        )
+    };
+    if n as usize != FDVNODEPATHINFO_SIZE {
+        return None;
+    }
+    let start = FD_VIP_PATH_OFFSET;
+    let end = buf[start..]
+        .iter()
+        .position(|b| *b == 0)
+        .map(|i| start + i)
+        .unwrap_or(buf.len());
+    if end <= start {
+        return None;
+    }
+    String::from_utf8(buf[start..end].to_vec()).ok()
 }
 
 fn bsd_info(pid: i32) -> Option<ProcBsdInfo> {

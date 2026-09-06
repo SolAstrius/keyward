@@ -64,12 +64,16 @@ final class ApprovalPanel {
     // MARK: - Geometry
 
     private func cardRectCG(for s: CGRect) -> CGRect {
-        let w = CardMetrics.pad + CardMetrics.detailWidth + CardMetrics.gap
-              + s.width + CardMetrics.pad
-        let h = CardMetrics.pad * 2 + s.height
-        return CGRect(x: s.minX - (CardMetrics.pad + CardMetrics.detailWidth + CardMetrics.gap),
-                      y: s.minY - CardMetrics.pad,
-                      width: w, height: h)
+        let detail = ctx.map { CardMetrics.detailWidth(for: $0) } ?? CardMetrics.baseDetail
+        let w = CardMetrics.pad + detail + CardMetrics.gap + s.width + CardMetrics.pad
+        // The card grows downward for a long script; the slot stays pinned at
+        // the top of its column so the sheet still lands in it.
+        let content = ctx.map { ApprovalView.preferredHeight(for: $0, sheetHeight: s.height) }
+                   ?? s.height
+        let h = CardMetrics.pad * 2 + content
+        // Keep the card on screen when a wide script pushes it leftward.
+        let x = max(8, s.minX - (CardMetrics.pad + detail + CardMetrics.gap))
+        return CGRect(x: x, y: s.minY - CardMetrics.pad, width: w, height: h)
     }
 
     private func rebuild() {
