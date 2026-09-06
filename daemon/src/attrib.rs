@@ -103,6 +103,17 @@ pub struct ProcInfo {
     pub args: Vec<String>,
 }
 
+impl ProcInfo {
+    /// The caller's full command line, for surfaces with room to show it.
+    pub fn commandline(&self) -> String {
+        if self.args.is_empty() {
+            self.path.clone().unwrap_or_default()
+        } else {
+            self.args.join(" ")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInfo {
     /// e.g. /Applications/Ghostty.app

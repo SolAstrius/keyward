@@ -42,6 +42,9 @@ pub struct Ctx {
     /// Seconds during which one Touch ID authentication covers further
     /// signatures. 0 asks every time.
     pub touch_id_reuse_secs: f64,
+    /// Overrides the system sheet's text. Empty means "describe the action";
+    /// a single space means "say as little as macOS allows".
+    pub sheet_reason: String,
 }
 
 pub fn fingerprint(blob: &[u8]) -> String {
@@ -64,7 +67,7 @@ fn failure() -> Vec<u8> {
 /// chain are in the app — the prompt only has to answer "consent to what?".
 const PROMPT_MAX: usize = 56;
 
-fn prompt_text(who: &Attribution) -> String {
+fn prompt_action(who: &Attribution) -> String {
     let p = &who.purpose;
     let host = p.host.clone().unwrap_or_else(|| "unknown host".into());
 
@@ -96,12 +99,22 @@ fn prompt_text(who: &Attribution) -> String {
         PurposeKind::Unknown => "Authorise a signature".to_string(),
     };
 
-    let action = sanitise(&action);
+    crate::purpose::shorten(&sanitise(&action), PROMPT_MAX)
+}
+
+/// What the system sheet says. The card behind it already carries the headline,
+/// the app, the command and the key, so repeating any of it here just makes the
+/// small panel wordier than the big one.
+fn sheet_reason(who: &Attribution, configured: &str) -> String {
+    if !configured.is_empty() {
+        return crate::purpose::shorten(&sanitise(configured), PROMPT_MAX);
+    }
+    let action = prompt_action(who);
     match who.app.as_ref().map(|a| sanitise(&a.name)) {
         Some(app) if action.chars().count() + app.chars().count() + 3 <= PROMPT_MAX => {
             format!("{action} · {app}")
         }
-        _ => crate::purpose::shorten(&action, PROMPT_MAX),
+        _ => action,
     }
 }
 
@@ -214,8 +227,13 @@ fn handle_sign(ctx: &Ctx, payload: &[u8], who: &Attribution, bound: &Option<Stri
             let _ = r2.string();
             let data = r2.string().unwrap_or(&[]).to_vec();
 
-            let reason = prompt_text(who);
-            let (reply, outcome) = match e.sign(&data, &reason, ctx.touch_id_reuse_secs) {
+            let headline = prompt_action(who);
+            let reason = sheet_reason(who, &ctx.sheet_reason);
+            let fp = fingerprint(&blob);
+            let card = crate::ui::show(who, &headline, Some(&e.comment), Some(&fp));
+            let signed = e.sign(&data, &reason, ctx.touch_id_reuse_secs);
+            card.done();
+            let (reply, outcome) = match signed {
                 Ok(sig) => {
                     let mut w = Writer::new();
                     w.u8(SIGN_RESPONSE);
@@ -229,7 +247,7 @@ fn handle_sign(ctx: &Ctx, payload: &[u8], who: &Attribution, bound: &Option<Stri
                 ts: crate::event::now(),
                 kind: Kind::Sign,
                 who: who.clone(),
-                key_fp: Some(fingerprint(&blob)),
+                key_fp: Some(fp),
                 key_comment: Some(e.comment.clone()),
                 upstream: Some("Secure Enclave".to_string()),
                 bound_host_fp: bound.clone(),

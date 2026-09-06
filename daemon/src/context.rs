@@ -73,6 +73,42 @@ pub struct Context {
     pub declared: Option<serde_json::Value>,
     pub declared_from_pid: Option<i32>,
     pub git: Option<GitContext>,
+    /// Human title of the agent session, when one can be resolved.
+    pub session_title: Option<String>,
+}
+
+/// Turn `local_fbfbe49b-…` into "SSH handshakes failing over mesh".
+///
+/// Claude Code keeps a record per session under its application support
+/// directory, named for the session id and carrying the title it displays.
+/// A raw UUID tells a human nothing; the title tells them which conversation
+/// asked for the key.
+fn session_title(id: &str) -> Option<String> {
+    if id.is_empty() || id.contains('/') || id.contains("..") {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    let root = PathBuf::from(home).join("Library/Application Support/Claude/claude-code-sessions");
+    let target = format!("{id}.json");
+
+    // <root>/<workspace>/<project>/<session>.json
+    for a in std::fs::read_dir(&root).ok()?.flatten() {
+        let Ok(inner) = std::fs::read_dir(a.path()) else { continue };
+        for b in inner.flatten() {
+            let f = b.path().join(&target);
+            if !f.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).ok()?;
+            let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+            return v
+                .get("title")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty())
+                .map(|t| truncate(t, 90));
+        }
+    }
+    None
 }
 
 fn context_dir() -> PathBuf {
@@ -179,6 +215,9 @@ pub fn gather(chain: &[ProcInfo], repo_path: Option<&str>, signing_commit: bool)
     let (env, env_from_pid, env_from) = env_from_chain(chain);
     let (declared, declared_from_pid) = declared_for(chain);
     let git = repo_path.and_then(|r| git_context(r, signing_commit));
+    let title = env
+        .get("CLAUDE_CODE_HOST_SESSION_ID")
+        .and_then(|id| session_title(id));
     Context {
         env,
         env_from_pid,
@@ -186,6 +225,7 @@ pub fn gather(chain: &[ProcInfo], repo_path: Option<&str>, signing_commit: bool)
         declared,
         declared_from_pid,
         git,
+        session_title: title,
     }
 }
 

@@ -1,7 +1,17 @@
 import SwiftUI
 
+/// The socket has to be listening whether or not a window is on screen — the
+/// app can be launched, restored, or left as a menu bar item with every window
+/// closed, and a view's onAppear fires in none of those cases.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ note: Notification) {
+        ApprovalServer.shared.start()
+    }
+}
+
 @main
 struct KeywardApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = EventStore()
 
     var body: some Scene {

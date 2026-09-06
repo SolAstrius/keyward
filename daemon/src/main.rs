@@ -4,6 +4,7 @@ mod context;
 mod enclave;
 mod event;
 mod purpose;
+mod ui;
 mod upstream;
 mod wire;
 
@@ -40,6 +41,8 @@ struct Config {
     /// 0 = authenticate every signature. macOS caps this at 300.
     #[serde(default)]
     touch_id_reuse_secs: f64,
+    #[serde(default)]
+    sheet_reason: String,
     #[serde(default)]
     enclave_key: Option<String>,
     #[serde(default = "default_enclave_comment")]
@@ -92,6 +95,7 @@ impl Default for Config {
             max_log_bytes: default_max_log(),
             log_list_identities: false,
             touch_id_reuse_secs: 0.0,
+            sheet_reason: String::new(),
             enclave_key: None,
             enclave_comment: default_enclave_comment(),
         }
@@ -300,6 +304,7 @@ fn main() {
         conns: AtomicUsize::new(0),
         log_lists: cfg.log_list_identities,
         touch_id_reuse_secs: cfg.touch_id_reuse_secs,
+        sheet_reason: cfg.sheet_reason.clone(),
     });
 
     eprintln!(
