@@ -262,3 +262,7 @@ registration keeps the running daemon and its path in the same place.
 Building it in the nix sandbox is not possible: it links a Swift shim that needs
 Xcode. The activation script copies whatever `./build.sh` produced and does
 nothing when there is no build to copy.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
